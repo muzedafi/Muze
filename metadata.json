@@ -1,0 +1,7 @@
+{
+  "name": "Bang Muze Tools Generator",
+  "description": "An AI-powered application that constructs detailed prompts from conceptual building blocks (DNA) to generate or edit unique images using the Gemini API.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
