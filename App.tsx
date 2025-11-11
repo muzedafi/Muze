@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { generateImageFromText, editImageWithPrompt, getPromptFeedback, getSmartSuggestions, generateVideoFromPrompt, generateDialogueScript, generateJsonPrompt, analyzeImageForMovement, generateSingleImage } from './services/geminiService';
 import { ART_STYLES, COLOR_PALETTES, ASPECT_RATIOS, ENVIRONMENT_OPTIONS, RESOLUTION_OPTIONS, BLUR_OPTIONS, CAMERA_ANGLES, LIGHTING_STYLES, TIME_OPTIONS, VIDEO_STYLES, CAMERA_MOVEMENTS, VIDEO_RESOLUTIONS, VIDEO_LANGUAGES, VOICE_GENDERS, SPEAKING_STYLES, VIDEO_MOODS, MOVEMENT_OPTIONS, STRUCTURED_PROMPT_TEXTS, DIALOGUE_STYLES, DIALOGUE_TEMPOS, VIDEO_CONCEPTS } from './constants';
@@ -63,11 +62,11 @@ const processImageToAspectRatio = (
 
 const App: React.FC = () => {
   // --- API Key State ---
-  const [apiKey, setApiKey] = useState<string>('');
-  const [tempApiKey, setTempApiKey] = useState<string>('');
+  const [isApiKeySelected, setIsApiKeySelected] = useState(false);
 
   // Mode State
   const [generatorMode, setGeneratorMode] = useState<'product' | 'video'>('product');
+  const [isFading, setIsFading] = useState(false);
   
   // --- IMAGE DNA States ---
   const [subject, setSubject] = useState<string>('Wanita muda Indonesia yang cantik');
@@ -172,13 +171,16 @@ const App: React.FC = () => {
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState<boolean>(false);
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
   
-  // Check for API key in localStorage on initial load
   useEffect(() => {
-    const savedApiKey = localStorage.getItem('gemini-api-key');
-    if (savedApiKey) {
-      setApiKey(savedApiKey);
-    }
+    const checkApiKey = async () => {
+      if (window.aistudio) {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        setIsApiKeySelected(hasKey);
+      }
+    };
+    checkApiKey();
   }, []);
+
 
   // Effect to process uploaded image when it or the aspect ratio changes
   useEffect(() => {
@@ -346,20 +348,25 @@ const App: React.FC = () => {
     }
   };
 
-  const handleApiKeySubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (tempApiKey.trim()) {
-      setApiKey(tempApiKey);
-      localStorage.setItem('gemini-api-key', tempApiKey);
+  const handleSelectKey = async () => {
+    if (window.aistudio) {
+        await window.aistudio.openSelectKey();
+        setIsApiKeySelected(true); // Optimistically assume success
     }
   };
 
+  const handleApiError = (err: unknown, errorSetter: React.Dispatch<React.SetStateAction<string | null>>) => {
+    const errorMessage = err instanceof Error ? err.message : 'Terjadi kesalahan yang tidak diketahui.';
+    if (errorMessage.includes('Requested entity was not found')) {
+        errorSetter('Otorisasi gagal. Silakan pilih kembali Kunci API Anda.');
+        setIsApiKeySelected(false); // Force re-selection
+    } else {
+        errorSetter(errorMessage);
+    }
+    console.error(err);
+  }
+
   const handleGenerateImage = useCallback(async () => {
-    if (!apiKey) return;
-
-    // DEBUG: Log the API key being used for the request
-    console.log('Menggunakan API Key:', apiKey);
-
     setIsLoading(true);
     setError(null);
     setGeneratedImages(null);
@@ -374,37 +381,47 @@ const App: React.FC = () => {
             'sebagai foto potret close-up'
         ];
         
-        // Make requests sequentially to avoid rate limiting errors
         const generatedUrls: string[] = [];
         for (const pose of posePrompts) {
-            const fullPrompt = `${finalPrompt}, ${pose}. Subjek harus terlihat konsisten dengan gambar referensi.`;
-            const imageUrl = await editImageWithPrompt(apiKey, fullPrompt, processedImage);
+            const fullPrompt = `Gunakan gambar referensi ini sebagai panduan visual utama. Pertahankan konsistensi pada penampilan subjek, pakaian, produk, dan latar belakang yang ada di gambar referensi. Terapkan prompt berikut: "${finalPrompt}". Fokus utama perubahan adalah untuk menyesuaikan pose subjek menjadi: ${pose}. Hindari perubahan drastis pada elemen-elemen penting lainnya.`;
+            const imageUrl = await editImageWithPrompt(fullPrompt, processedImage);
             generatedUrls.push(imageUrl);
         }
         imageUrls = generatedUrls;
 
       } else {
-        imageUrls = await generateImageFromText(apiKey, finalPrompt, aspectRatio);
+        // Generate 4 variations with consistent background, clothing, and product
+        const posePrompts = [
+            'dalam pose berdiri seluruh badan, menghadap kamera',
+            'dalam pose duduk santai di elemen yang ada di lingkungan tersebut (misal: kursi, tangga, batu)',
+            'diambil dari sudut rendah, menampilkan subjek secara keseluruhan dengan latar yang megah',
+            'sebagai foto potret close-up, fokus pada ekspresi wajah'
+        ];
+
+        const generatedUrls: string[] = [];
+        for (const pose of posePrompts) {
+            // Stricter prompt for new generation, emphasizing consistency
+            const fullPrompt = `${finalPrompt}. INSTRUKSI PENTING: Latar belakang, pakaian model, dan produk apa pun yang dipegang atau ditampilkan harus TETAP SAMA di semua gambar. Jangan mengubahnya. Satu-satunya variasi yang diizinkan adalah pose subjek dan sudut kamera. Untuk gambar ini, gunakan pose berikut: ${pose}.`;
+            const imageUrl = await generateSingleImage(fullPrompt, aspectRatio as any);
+            generatedUrls.push(imageUrl);
+        }
+        imageUrls = generatedUrls;
       }
       setGeneratedImages(imageUrls);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Terjadi kesalahan yang tidak diketahui.';
-      setError(errorMessage);
-      console.error(err);
+      handleApiError(err, setError);
     } finally {
       setIsLoading(false);
     }
-  }, [apiKey, finalPrompt, uploadedImage, processedImage, aspectRatio]);
+  }, [finalPrompt, uploadedImage, processedImage, aspectRatio]);
 
   const handleGenerateVideo = useCallback(async () => {
-    if (!apiKey) return;
     setIsVideoLoading(true);
     setVideoError(null);
     setGeneratedVideo(null);
     setVideoLoadingMessage('Mempersiapkan pembuatan video...');
     try {
         const videoUrl = await generateVideoFromPrompt(
-            apiKey,
             finalVideoPrompt,
             videoAspectRatio as '16:9' | '9:16',
             videoResolution as '720p' | '1080p',
@@ -413,78 +430,60 @@ const App: React.FC = () => {
         );
         setGeneratedVideo(videoUrl);
     } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Terjadi kesalahan yang tidak diketahui saat membuat video.';
-        if (errorMessage.includes('API key not valid') || errorMessage.includes('Kunci API')) {
-          setVideoError('Kunci API Anda tidak valid. Silakan periksa dan masukkan kunci yang benar.');
-          localStorage.removeItem('gemini-api-key');
-          setApiKey(''); // Clear the key to show the input form again
-        } else {
-            setVideoError(errorMessage);
-        }
-        console.error(err);
+        handleApiError(err, setVideoError);
     } finally {
         setIsVideoLoading(false);
         setVideoLoadingMessage('');
     }
-  }, [apiKey, finalVideoPrompt, videoAspectRatio, videoResolution, videoUploadedImage]);
+  }, [finalVideoPrompt, videoAspectRatio, videoResolution, videoUploadedImage]);
 
   const handleGetFeedback = useCallback(async () => {
-    if (!apiKey) return;
     setIsFeedbackLoading(true);
     setFeedbackError(null);
     setPromptFeedback(null);
     const currentPrompt = generatorMode === 'product' ? finalPrompt : finalVideoPrompt;
     try {
-        const feedback = await getPromptFeedback(apiKey, currentPrompt);
+        const feedback = await getPromptFeedback(currentPrompt);
         setPromptFeedback(feedback);
     } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Gagal mendapatkan saran.';
-        setFeedbackError(errorMessage);
-        console.error(err);
+        handleApiError(err, setFeedbackError);
     } finally {
         setIsFeedbackLoading(false);
     }
-  }, [apiKey, finalPrompt, finalVideoPrompt, generatorMode]);
+  }, [finalPrompt, finalVideoPrompt, generatorMode]);
 
   const handleGetSmartSuggestions = useCallback(async () => {
-    if (!apiKey) return;
     setIsSuggestionsLoading(true);
     setSuggestionsError(null);
     setSmartSuggestions(null);
     try {
-        const suggestions = await getSmartSuggestions(apiKey, { subject, style, environment });
+        const suggestions = await getSmartSuggestions({ subject, style, environment });
         setSmartSuggestions(suggestions);
     } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Gagal mendapatkan prompt cerdas.';
-        setSuggestionsError(errorMessage);
-        console.error(err);
+        handleApiError(err, setSuggestionsError);
     } finally {
         setIsSuggestionsLoading(false);
     }
-  }, [apiKey, subject, style, environment]);
+  }, [subject, style, environment]);
   
   const handleGenerateDialogue = useCallback(async (movement: string) => {
-    if (!apiKey) return;
     setIsDialogueLoading(true);
     setDialogueError(null);
     try {
-        const generatedDialogue = await generateDialogueScript(apiKey, {
+        const generatedDialogue = await generateDialogueScript({
             subject: videoSubject,
             action: videoAction,
             movement: movement,
         });
         setDialogueText(generatedDialogue);
     } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Gagal menghasilkan dialog.';
-        setDialogueError(errorMessage);
-        console.error(err);
+        handleApiError(err, setDialogueError);
     } finally {
         setIsDialogueLoading(false);
     }
-  }, [apiKey, videoSubject, videoAction]);
+  }, [videoSubject, videoAction]);
   
   const handleGenerateJsonPrompt = useCallback(async () => {
-    if (!apiKey) return;
     setIsJsonLoading(true);
     setJsonError(null);
     setParsedJsonPrompt(null);
@@ -507,7 +506,7 @@ const App: React.FC = () => {
     }
 
     try {
-        const jsonString = await generateJsonPrompt(apiKey, {
+        const jsonString = await generateJsonPrompt({
             subject: videoSubject,
             action: videoAction,
             videoConcept: finalConcept,
@@ -542,7 +541,7 @@ const App: React.FC = () => {
             }
             
             const imagePromises = imagePrompts.map(prompt =>
-                generateSingleImage(apiKey, prompt, videoAspectRatio as any)
+                generateSingleImage(prompt, videoAspectRatio as any)
             );
             const generatedUrls = await Promise.all(imagePromises);
             setJsonGeneratedImages(generatedUrls);
@@ -556,14 +555,11 @@ const App: React.FC = () => {
         // --- End of auto-image generation ---
 
     } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Failed to generate or parse JSON prompt.';
-        setJsonError(errorMessage);
-        console.error(err);
+        handleApiError(err, setJsonError);
     } finally {
         setIsJsonLoading(false);
     }
   }, [
-    apiKey,
     videoSubject, 
     videoAction, 
     jsonPromptLanguage,
@@ -586,11 +582,11 @@ const App: React.FC = () => {
   ]);
   
   const handleAnalyzeMovement = useCallback(async () => {
-    if (!apiKey || !videoUploadedImage) return;
+    if (!videoUploadedImage) return;
     setIsAnalysisLoading(true);
     setAnalysisError(null);
     try {
-        const analysis = await analyzeImageForMovement(apiKey, videoUploadedImage);
+        const analysis = await analyzeImageForMovement(videoUploadedImage);
         setVideoAction(analysis.mainAction);
         setCameraMovement(analysis.cameraMovement);
         
@@ -604,13 +600,11 @@ const App: React.FC = () => {
         setCustomCtaMovement(analysis.ctaMovement);
 
     } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Gagal menganalisis gerakan.';
-        setAnalysisError(errorMessage);
-        console.error(err);
+        handleApiError(err, setAnalysisError);
     } finally {
         setIsAnalysisLoading(false);
     }
-  }, [apiKey, videoUploadedImage]);
+  }, [videoUploadedImage]);
 
   const handleCopyBlock = (blockContent: any, blockIndex: number) => {
       const jsonString = JSON.stringify(blockContent, null, 2);
@@ -620,7 +614,21 @@ const App: React.FC = () => {
       });
   };
   
-  // FIX: Explicitly type JsonBlock as a React.FC to correctly handle the `key` prop provided during mapping.
+  const handleUseImageForVideo = (imageUrl: string) => {
+    handleModeChange('video');
+    setVideoUploadedImage(imageUrl);
+    window.scrollTo(0, 0); // Scroll to top for better UX
+  };
+
+  const handleModeChange = (newMode: 'product' | 'video') => {
+    if (generatorMode === newMode) return;
+    setIsFading(true);
+    setTimeout(() => {
+      setGeneratorMode(newMode);
+      setIsFading(false);
+    }, 200); // Match tailwind duration-200
+  };
+
   const JsonBlock: React.FC<{ title: string, data: any, blockIndex: number }> = ({ title, data, blockIndex }) => {
     const currentTexts = STRUCTURED_PROMPT_TEXTS[jsonPromptLanguage];
     if (!data) return null;
@@ -868,66 +876,83 @@ const App: React.FC = () => {
 
       {/* Image Output Section */}
       <div className={`mt-6 ${!(isLoading || generatedImages || error) ? 'invisible' : ''}`}>
-        <DnaInputSection title="Hasil Gambar" description={generatedImages ? "4 variasi pose dihasilkan. Arahkan kursor untuk menyimpan." : ""}>
-          <ImageDisplay
-            generatedImages={generatedImages}
-            isLoading={isLoading}
-            error={error}
-            aspectRatio={aspectRatio}
-          />
-        </DnaInputSection>
+        <ImageDisplay 
+          generatedImages={generatedImages}
+          isLoading={isLoading}
+          error={error}
+          aspectRatio={aspectRatio}
+          onUseForVideo={handleUseImageForVideo}
+        />
       </div>
     </>
   );
 
   const renderVideoGenerator = () => {
+    const currentMovementOptions = MOVEMENT_OPTIONS[jsonPromptLanguage] || MOVEMENT_OPTIONS.en;
+    const currentDialogueStyles = DIALOGUE_STYLES[jsonPromptLanguage] || DIALOGUE_STYLES.en;
+    const currentDialogueTempos = DIALOGUE_TEMPOS[jsonPromptLanguage] || DIALOGUE_TEMPOS.en;
     const currentTexts = STRUCTURED_PROMPT_TEXTS[jsonPromptLanguage];
-    const currentMovementOptions = MOVEMENT_OPTIONS[jsonPromptLanguage];
+
+    const MovementSelector: React.FC<{
+        label: string;
+        value: string;
+        onChange: (v: string) => void;
+        customValue: string;
+        onCustomChange: (v: string) => void;
+        dialogueValue: string;
+        onDialogueChange: (v: string) => void;
+    }> = ({ label, value, onChange, customValue, onCustomChange, dialogueValue, onDialogueChange }) => (
+        <div className="flex flex-col gap-3">
+            <h4 className="text-md font-medium text-gray-300">{label}</h4>
+            <select
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
+            >
+                {currentMovementOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+            </select>
+            {value === 'Custom' && (
+                <input
+                    type="text"
+                    value={customValue}
+                    onChange={(e) => onCustomChange(e.target.value)}
+                    placeholder={currentTexts.customPlaceholder}
+                    className="w-full bg-gray-800 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
+                />
+            )}
+            <textarea
+                value={dialogueValue}
+                onChange={(e) => onDialogueChange(e.target.value)}
+                placeholder={currentTexts.dialoguePlaceholder}
+                rows={2}
+                className="w-full bg-gray-800 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
+            />
+        </div>
+    );
 
     return (
     <>
-      <DnaInputSection title="Konsep Video" description="Pilih konsep utama untuk video Anda.">
-          <select
-              value={videoConcept}
-              onChange={(e) => setVideoConcept(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-          >
-              {VIDEO_CONCEPTS.map((option) => (
-                  <option key={option} value={option}>{option}</option>
-              ))}
-          </select>
-          {videoConcept === 'Kustom...' && (
-              <input
-                  type="text"
-                  value={customVideoConcept}
-                  onChange={(e) => setCustomVideoConcept(e.target.value)}
-                  placeholder="Tulis konsep video kustom di sini..."
-                  className="w-full mt-4 bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-              />
-          )}
-      </DnaInputSection>
-
-      <DnaInputSection title="Gambar Referensi" description="Unggah gambar sebagai bingkai awal atau referensi gaya untuk video Anda.">
+      <DnaInputSection title="Aset Referensi (Opsional)" description="Unggah gambar untuk memandu pembuatan video.">
         {videoUploadedImage ? (
-           <div className="flex flex-col gap-4 items-center">
-              <img src={videoUploadedImage} alt="Pratinjau yang diunggah" className="w-full max-w-md rounded-lg border-2 border-gray-600 object-contain" />
-              <div className="w-full flex justify-center gap-4 mt-2">
-                <button 
-                    onClick={removeVideoUploadedImage}
-                    className="px-4 py-2 bg-red-600/50 text-white rounded-lg hover:bg-red-600/80 transition"
-                >
-                    Hapus
-                </button>
-                <button
-                    onClick={handleAnalyzeMovement}
-                    disabled={isAnalysisLoading}
-                    className="py-2 px-4 text-sm font-semibold text-white rounded-lg bg-gradient-to-r from-cyan-600 to-teal-500 hover:from-cyan-700 hover:to-teal-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md focus:outline-none focus:ring-4 focus:ring-cyan-500/50"
-                >
-                    {isAnalysisLoading ? 'Menganalisis...' : 'Analisis Gerakan'}
-                </button>
+          <div className="flex flex-col gap-4">
+              <img src={videoUploadedImage} alt="Pratinjau Video yang diunggah" className="w-full max-w-2xl mx-auto rounded-lg border-2 border-gray-600" />
+              <div className="flex justify-between gap-4">
+                  <button 
+                      onClick={handleAnalyzeMovement}
+                      disabled={isAnalysisLoading}
+                      className="flex-grow px-4 py-2 bg-cyan-600/50 text-white rounded-lg hover:bg-cyan-600/80 transition disabled:opacity-50"
+                  >
+                      {isAnalysisLoading ? 'Menganalisis...' : 'Analisis Gambar untuk Gerakan'}
+                  </button>
+                  <button 
+                      onClick={removeVideoUploadedImage}
+                      className="px-4 py-2 bg-red-600/50 text-white rounded-lg hover:bg-red-600/80 transition"
+                  >
+                      Hapus
+                  </button>
               </div>
-              {analysisError && <p className="text-red-400 text-xs mt-2">{analysisError}</p>}
-           </div>
+              {analysisError && <p className="text-red-400 text-sm mt-2">{analysisError}</p>}
+          </div>
         ) : (
           <>
             <label htmlFor="video-file-upload" className="w-full text-center cursor-pointer bg-gray-700 text-white rounded-md p-3 border border-gray-600 hover:bg-gray-600 transition">
@@ -944,504 +969,212 @@ const App: React.FC = () => {
           </>
         )}
       </DnaInputSection>
-
-      <DnaInputSection title="Subjek Inti" description="Karakter atau objek utama dalam video Anda.">
-          <input
-              type="text"
-              value={videoSubject}
-              onChange={(e) => setVideoSubject(e.target.value)}
-              placeholder="contoh: Astronot mengambang"
-              className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-          />
+      
+      <DnaInputSection title="Konsep & Subjek Inti" description="Tentukan ide utama video Anda.">
+        <input
+          type="text"
+          value={videoSubject}
+          onChange={(e) => setVideoSubject(e.target.value)}
+          placeholder="Subjek video (misal: seorang wanita menampilkan produk fashion)"
+          className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
+        />
+        <textarea
+          value={videoAction}
+          onChange={(e) => setVideoAction(e.target.value)}
+          placeholder="Aksi utama (misal: berjalan anggun sambil memegang tas tangan)"
+          rows={2}
+          className="w-full mt-4 bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
+        />
       </DnaInputSection>
 
-      <DnaInputSection title="Aksi / Gerakan Utama" description="Apa yang dilakukan subjek?">
-          <textarea
-              value={videoAction}
-              onChange={(e) => setVideoAction(e.target.value)}
-              placeholder="contoh: memegang produk dan menunjukkannya ke kamera"
-              rows={2}
-              className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-          />
-      </DnaInputSection>
+      <div className="pt-6 border-t border-gray-700" />
 
-       <DnaInputSection 
-        title="Structured Video Prompt"
+      {/* --- Structured Prompt Generator --- */}
+      <DnaInputSection 
+        title={currentTexts.title} 
         description={currentTexts.description}
         titleExtra={
-          <div className="flex items-center gap-2">
-            <span className={`text-xs font-semibold ${jsonPromptLanguage === 'en' ? 'text-white' : 'text-gray-400'}`}>EN</span>
-            <label htmlFor="lang-toggle" className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" id="lang-toggle" className="sr-only peer" 
-                  checked={jsonPromptLanguage === 'id'} 
-                  onChange={() => setJsonPromptLanguage(lang => lang === 'en' ? 'id' : 'en')} />
-                <div className="w-9 h-5 bg-gray-600 rounded-full peer peer-focus:ring-2 peer-focus:ring-purple-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
-            </label>
-            <span className={`text-xs font-semibold ${jsonPromptLanguage === 'id' ? 'text-white' : 'text-gray-400'}`}>ID</span>
-          </div>
+             <div className="flex items-center gap-2 text-xs">
+                <span className={jsonPromptLanguage === 'en' ? 'text-white' : 'text-gray-400'}>EN</span>
+                <label htmlFor="lang-toggle" className="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="lang-toggle" className="sr-only peer"
+                        checked={jsonPromptLanguage === 'id'}
+                        onChange={() => setJsonPromptLanguage(lang => lang === 'en' ? 'id' : 'en')}
+                    />
+                    <div className="w-9 h-5 bg-gray-600 rounded-full peer peer-focus:ring-2 peer-focus:ring-purple-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
+                </label>
+                <span className={jsonPromptLanguage === 'id' ? 'text-white' : 'text-gray-400'}>ID</span>
+            </div>
         }
-       >
-        <div className="flex flex-col gap-6 p-4 bg-gray-900/50 rounded-lg">
-            {/* Dialogue Settings Section */}
-            <div className="mb-2 p-4 border-b border-gray-700/50">
-              <h4 className="text-md font-semibold text-gray-300 mb-3">{currentTexts.dialogueSettingsTitle}</h4>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-1">{currentTexts.dialogueStyleLabel}</label>
-                      <select
-                          value={dialogueStyle}
-                          onChange={(e) => setDialogueStyle(e.target.value)}
-                          className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                      >
-                          {DIALOGUE_STYLES[jsonPromptLanguage].map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                      </select>
-                  </div>
-                  <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-1">{currentTexts.dialogueLanguageLabel}</label>
-                      <select
-                          value={dialogueLanguage}
-                          onChange={(e) => setDialogueLanguage(e.target.value)}
-                          className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                      >
-                          {VIDEO_LANGUAGES.map(lang => <option key={lang} value={lang}>{lang}</option>)}
-                      </select>
-                  </div>
-                  <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-1">{currentTexts.dialogueTempoLabel}</label>
-                      <select
-                          value={dialogueTempo}
-                          onChange={(e) => setDialogueTempo(e.target.value)}
-                          className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                      >
-                          {DIALOGUE_TEMPOS[jsonPromptLanguage].map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                      </select>
-                  </div>
-              </div>
+      >
+        <div className="flex flex-col gap-6 bg-gray-900/50 p-4 rounded-lg">
+            <div className="grid md:grid-cols-3 gap-4">
+                 <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">{currentTexts.dialogueStyleLabel}</label>
+                    <select value={dialogueStyle} onChange={e => setDialogueStyle(e.target.value)} className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 text-sm">
+                        {currentDialogueStyles.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                    </select>
+                </div>
+                 <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">{currentTexts.dialogueLanguageLabel}</label>
+                    <select value={dialogueLanguage} onChange={e => setDialogueLanguage(e.target.value)} className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 text-sm">
+                        {VIDEO_LANGUAGES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    </select>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">{currentTexts.dialogueTempoLabel}</label>
+                    <select value={dialogueTempo} onChange={e => setDialogueTempo(e.target.value)} className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 text-sm">
+                        {currentDialogueTempos.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                    </select>
+                </div>
             </div>
-
-            {/* Hook Section */}
-            <div className="flex flex-col gap-2">
-                <h4 className="text-md font-semibold text-gray-300">1. {currentTexts.hookTitle}</h4>
-                <select
-                    value={hookMovement}
-                    onChange={(e) => setHookMovement(e.target.value)}
-                    className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                >
-                    {currentMovementOptions.map(opt => <option key={`hook-${opt.value}`} value={opt.value}>{opt.label}</option>)}
+             <div className="flex flex-col gap-2">
+                <label className="block text-sm font-medium text-gray-300">Konsep Video</label>
+                <select value={videoConcept} onChange={e => setVideoConcept(e.target.value)} className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600">
+                    {VIDEO_CONCEPTS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                 </select>
-                {hookMovement === 'Custom' && (
-                    <input
-                        type="text"
-                        value={customHookMovement}
-                        onChange={(e) => setCustomHookMovement(e.target.value)}
-                        placeholder={currentTexts.customPlaceholder}
-                        className="w-full mt-2 bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                    />
+                {videoConcept === 'Kustom...' && (
+                     <input type="text" value={customVideoConcept} onChange={e => setCustomVideoConcept(e.target.value)} placeholder="Masukkan konsep video kustom..." className="w-full mt-2 bg-gray-800 text-white rounded-md p-3 border border-gray-600" />
                 )}
-                 <textarea
-                    value={hookDialogue}
-                    onChange={(e) => setHookDialogue(e.target.value)}
-                    placeholder={currentTexts.dialoguePlaceholder}
-                    rows={2}
-                    className="w-full mt-2 bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition text-sm"
-                />
             </div>
-            {/* Problem-Solve Section */}
-            <div className="flex flex-col gap-2">
-                <h4 className="text-md font-semibold text-gray-300">2. {currentTexts.problemTitle}</h4>
-                <select
-                    value={problemMovement}
-                    onChange={(e) => setProblemMovement(e.target.value)}
-                    className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                >
-                    {currentMovementOptions.map(opt => <option key={`problem-${opt.value}`} value={opt.value}>{opt.label}</option>)}
-                </select>
-                {problemMovement === 'Custom' && (
-                    <input
-                        type="text"
-                        value={customProblemMovement}
-                        onChange={(e) => setCustomProblemMovement(e.target.value)}
-                        placeholder={currentTexts.customPlaceholder}
-                        className="w-full mt-2 bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                    />
-                )}
-                <textarea
-                    value={problemDialogue}
-                    onChange={(e) => setProblemDialogue(e.target.value)}
-                    placeholder={currentTexts.dialoguePlaceholder}
-                    rows={2}
-                    className="w-full mt-2 bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition text-sm"
-                />
-            </div>
-            {/* CTA Section */}
-            <div className="flex flex-col gap-2">
-                <h4 className="text-md font-semibold text-gray-300">3. {currentTexts.ctaTitle}</h4>
-                <select
-                    value={ctaMovement}
-                    onChange={(e) => setCtaMovement(e.target.value)}
-                    className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                >
-                    {currentMovementOptions.map(opt => <option key={`cta-${opt.value}`} value={opt.value}>{opt.label}</option>)}
-                </select>
-                {ctaMovement === 'Custom' && (
-                    <input
-                        type="text"
-                        value={customCtaMovement}
-                        onChange={(e) => setCustomCtaMovement(e.target.value)}
-                        placeholder={currentTexts.customPlaceholder}
-                        className="w-full mt-2 bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                    />
-                )}
-                <textarea
-                    value={ctaDialogue}
-                    onChange={(e) => setCtaDialogue(e.target.value)}
-                    placeholder={currentTexts.dialoguePlaceholder}
-                    rows={2}
-                    className="w-full mt-2 bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition text-sm"
-                />
-            </div>
+            
+            <MovementSelector label={currentTexts.hookTitle} value={hookMovement} onChange={setHookMovement} customValue={customHookMovement} onCustomChange={setCustomHookMovement} dialogueValue={hookDialogue} onDialogueChange={setHookDialogue} />
+            <MovementSelector label={currentTexts.problemTitle} value={problemMovement} onChange={setProblemMovement} customValue={customProblemMovement} onCustomChange={setCustomProblemMovement} dialogueValue={problemDialogue} onDialogueChange={setProblemDialogue} />
+            <MovementSelector label={currentTexts.ctaTitle} value={ctaMovement} onChange={setCtaMovement} customValue={customCtaMovement} onCustomChange={setCustomCtaMovement} dialogueValue={ctaDialogue} onDialogueChange={setCtaDialogue} />
         </div>
-
         <button
-            onClick={handleGenerateJsonPrompt}
-            disabled={isJsonLoading || !videoSubject.trim()}
-            className="w-full mt-4 py-2 px-4 text-md font-semibold text-white rounded-lg bg-gradient-to-r from-cyan-600 to-teal-500 hover:from-cyan-700 hover:to-teal-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md focus:outline-none focus:ring-4 focus:ring-cyan-500/50"
+          onClick={handleGenerateJsonPrompt}
+          disabled={isJsonLoading}
+          className="w-full mt-4 py-2 px-4 text-md font-semibold text-white rounded-lg bg-gradient-to-r from-teal-600 to-cyan-500 hover:from-teal-700 hover:to-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md"
         >
-            {isJsonLoading ? currentTexts.loadingButton : currentTexts.generateButton}
+          {isJsonLoading ? currentTexts.loadingButton : currentTexts.generateButton}
         </button>
-        {isJsonLoading && (
-            <div className="text-center text-gray-400 mt-4">
-                <svg className="animate-spin h-6 w-6 mx-auto text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-            </div>
-        )}
         {jsonError && <p className="text-red-400 text-sm mt-2">{jsonError}</p>}
         {parsedJsonPrompt && (
-            <div className="mt-4 flex flex-col gap-2">
-                {parsedJsonPrompt.map((item, index) => {
-                    const titles = ["1. Hook Scene", "2. Problem-Solve Scene", "3. CTA Scene"];
-                    return (
-                        <JsonBlock 
-                            key={index}
-                            title={titles[index]} 
-                            data={item}
-                            blockIndex={index} 
-                        />
-                    );
-                })}
+            <div className="mt-4">
+                <h3 className="text-lg font-semibold text-gray-200">Hasil Prompt JSON</h3>
+                {parsedJsonPrompt.map((block, index) => (
+                    <JsonBlock key={index} title={`Scene ${index + 1}`} data={block} blockIndex={index} />
+                ))}
             </div>
         )}
       </DnaInputSection>
 
-      {/* --- Section for Auto-Generated Scene Images --- */}
-      {(isJsonImageLoading || jsonGeneratedImages || jsonImageError) && (
-          <DnaInputSection title="Visual Referensi Adegan" description="Gambar yang dihasilkan AI untuk setiap adegan kunci.">
-              <div className="w-full bg-gray-900/50 rounded-lg flex items-center justify-center p-4 border-2 border-dashed border-gray-600 min-h-[250px]">
-                  {isJsonImageLoading && (
-                      <div className="flex flex-col items-center justify-center gap-4 text-gray-400">
-                          <svg className="animate-spin h-12 w-12 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          <p className="text-lg">Membuat visual adegan...</p>
-                      </div>
-                  )}
-                  {!isJsonImageLoading && jsonImageError && (
-                      <div className="text-center text-red-400 p-4">
-                          <h3 className="font-bold text-lg mb-2">Gagal Membuat Visual</h3>
-                          <p className="text-sm">{jsonImageError}</p>
-                      </div>
-                  )}
-                  {!isJsonImageLoading && !jsonImageError && jsonGeneratedImages && (
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
-                          {jsonGeneratedImages.map((image, index) => {
-                              const titles = ["Hook", "Problem-Solve", "CTA"];
-                              return (
-                                  <div key={index} className="flex flex-col items-center gap-2">
-                                      <h4 className="text-md font-semibold text-gray-300">{titles[index]}</h4>
-                                      <div className="relative group w-full aspect-square bg-gray-800 rounded-lg overflow-hidden">
-                                          <img 
-                                              src={image} 
-                                              alt={`Visual untuk adegan ${titles[index]}`} 
-                                              className="w-full h-full object-contain"
-                                          />
-                                      </div>
-                                  </div>
-                              );
-                          })}
-                      </div>
-                  )}
-              </div>
-          </DnaInputSection>
-      )}
+      {/* --- Image output for structured prompt --- */}
+       {(isJsonImageLoading || jsonImageError || jsonGeneratedImages) && (
+            <DnaInputSection title="Visual Referensi Adegan" description="Gambar yang dihasilkan AI berdasarkan setiap adegan dari prompt JSON.">
+                {isJsonImageLoading && <p className="text-gray-400">Menghasilkan visual adegan...</p>}
+                {jsonImageError && <p className="text-red-400 text-sm">{jsonImageError}</p>}
+                {jsonGeneratedImages && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {jsonGeneratedImages.map((image, index) => (
+                            <div key={index} className="aspect-video bg-gray-800 rounded-lg overflow-hidden">
+                                <img src={image} alt={`Visual Adegan ${index + 1}`} className="w-full h-full object-cover" />
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </DnaInputSection>
+        )}
 
 
-      <DnaInputSection title="Suara" description="Tambahkan narasi audio ke video Anda.">
-          <div className="flex items-center justify-between mb-4">
-              <h3 className="text-md font-medium text-gray-300">Aktifkan Suara</h3>
-              <label htmlFor="sound-toggle" className="relative inline-flex items-center cursor-pointer">
-                  <input type="checkbox" id="sound-toggle" className="sr-only peer" checked={isSoundEnabled} onChange={() => setIsSoundEnabled(!isSoundEnabled)} />
-                  <div className="w-11 h-6 bg-gray-600 rounded-full peer peer-focus:ring-2 peer-focus:ring-purple-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-              </label>
-          </div>
-          {isSoundEnabled && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-gray-900/50 rounded-lg">
-                  <div>
-                      <h4 className="text-sm font-medium text-gray-400 mb-2">Bahasa</h4>
-                      <select value={soundLanguage} onChange={(e) => setSoundLanguage(e.target.value)} className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition">
-                          {VIDEO_LANGUAGES.map(lang => <option key={lang} value={lang}>{lang}</option>)}
-                      </select>
-                  </div>
-                  <div>
-                      <h4 className="text-sm font-medium text-gray-400 mb-2">Gender Suara</h4>
-                      <select value={voiceGender} onChange={(e) => setVoiceGender(e.target.value)} className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition">
-                          {VOICE_GENDERS.map(gender => <option key={gender} value={gender}>{gender}</option>)}
-                      </select>
-                  </div>
-                  <div>
-                      <h4 className="text-sm font-medium text-gray-400 mb-2">Gaya Bicara</h4>
-                       <select value={speakingStyle} onChange={(e) => setSpeakingStyle(e.target.value)} className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition">
-                          {SPEAKING_STYLES.map(style => <option key={style} value={style}>{style}</option>)}
-                      </select>
-                  </div>
-                  <div>
-                      <h4 className="text-sm font-medium text-gray-400 mb-2">Suasana</h4>
-                       <select value={videoMood} onChange={(e) => setVideoMood(e.target.value)} className="w-full bg-gray-700 text-white rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition">
-                          {VIDEO_MOODS.map(mood => <option key={mood} value={mood}>{mood}</option>)}
-                      </select>
-                  </div>
-              </div>
-          )}
-      </DnaInputSection>
+      <div className="pt-6 border-t border-gray-700" />
 
-      <DnaInputSection title="Dialog" description="Tambahkan dialog atau monolog khusus ke video Anda.">
-          <div className="flex items-center justify-between mb-4">
-              <h3 className="text-md font-medium text-gray-300">Aktifkan Dialog</h3>
-              <label htmlFor="dialogue-toggle" className="relative inline-flex items-center cursor-pointer">
-                  <input type="checkbox" id="dialogue-toggle" className="sr-only peer" checked={isDialogueEnabled} onChange={() => setIsDialogueEnabled(!isDialogueEnabled)} />
-                  <div className="w-11 h-6 bg-gray-600 rounded-full peer peer-focus:ring-2 peer-focus:ring-purple-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-              </label>
-          </div>
-          {isDialogueEnabled && (
-            <div className="flex flex-col gap-3 p-4 bg-gray-900/50 rounded-lg mb-4">
-                <h4 className="text-sm font-medium text-gray-400">Pembangkit Dialog Otomatis</h4>
-                <p className="text-xs text-gray-500">Pilih gerakan untuk menghasilkan dialog yang sesuai secara otomatis berdasarkan subjek dan aksi Anda.</p>
-                <div className="flex flex-wrap gap-2">
-                    {['Gerakan 1', 'Gerakan 2', 'Gerakan 3'].map(gerakan => (
-                        <button
-                            key={gerakan}
-                            onClick={() => handleGenerateDialogue(gerakan)}
-                            disabled={isDialogueLoading}
-                            className="px-3 py-1 text-xs font-medium rounded-full transition-all duration-200 bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            {gerakan}
-                        </button>
-                    ))}
-                </div>
-                 {dialogueError && <p className="text-red-400 text-xs mt-1">{dialogueError}</p>}
-            </div>
-          )}
-          <textarea
-              value={dialogueText}
-              onChange={(e) => setDialogueText(e.target.value)}
-              placeholder={isDialogueLoading ? "Menghasilkan dialog..." : "Tulis dialog Anda di sini atau gunakan pembangkit otomatis..."}
-              rows={3}
-              disabled={!isDialogueEnabled || isDialogueLoading}
-              className={`w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition ${!isDialogueEnabled || isDialogueLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-          />
-      </DnaInputSection>
-
-      <DnaInputSection title="Gaya Video" description="Tentukan estetika visual keseluruhan dari video.">
-          <SelectableTags options={VIDEO_STYLES} selected={videoStyle} onSelect={setVideoStyle} />
-      </DnaInputSection>
-
-      <DnaInputSection title="Rasio Aspek & Resolusi" description="Atur dimensi dan kualitas video.">
-          <div className="flex flex-col gap-4">
-              <div>
-                  <h3 className="text-md font-medium text-gray-300 mb-2">Rasio Aspek</h3>
-                  <SelectableTags options={ASPECT_RATIOS.filter(r => r === '16:9' || r === '9:16')} selected={videoAspectRatio} onSelect={setVideoAspectRatio} />
-              </div>
-              <div>
-                  <h3 className="text-md font-medium text-gray-300 mb-2">Resolusi</h3>
-                  <SelectableTags options={VIDEO_RESOLUTIONS} selected={videoResolution} onSelect={setVideoResolution} />
-              </div>
-          </div>
-      </DnaInputSection>
-
-      <DnaInputSection title="Lingkungan / Latar" description="Pilih atau jelaskan latar belakang untuk video.">
-          <select
-              value={videoEnvironment}
-              onChange={(e) => setVideoEnvironment(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-          >
-              {ENVIRONMENT_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                      {option}
-                  </option>
-              ))}
-          </select>
-      </DnaInputSection>
-      
-      <DnaInputSection title="Waktu & Pencahayaan" description="Atur suasana melalui waktu dan gaya pencahayaan.">
-          <div className="flex flex-col gap-4">
-              <div>
-                  <h3 className="text-md font-medium text-gray-300 mb-2">Waktu</h3>
-                  <SelectableTags options={TIME_OPTIONS} selected={videoTimeOfDay} onSelect={setVideoTimeOfDay} />
-              </div>
-              <div>
-                  <h3 className="text-md font-medium text-gray-300 mb-2">Pencahayaan</h3>
-                  <SelectableTags options={LIGHTING_STYLES} selected={videoLightingStyle} onSelect={setVideoLightingStyle} />
-              </div>
-          </div>
-      </DnaInputSection>
-
-      <DnaInputSection title="Gerakan Kamera" description="Jelaskan bagaimana kamera bergerak selama pengambilan gambar.">
-          <SelectableTags options={CAMERA_MOVEMENTS} selected={cameraMovement} onSelect={setCameraMovement} />
-      </DnaInputSection>
-
-      <DnaInputSection title="Palet Warna" description="Pilih skema warna yang dominan untuk video.">
-          <SelectableTags options={COLOR_PALETTES} selected={videoPalette} onSelect={setVideoPalette} />
-      </DnaInputSection>
-
-      <DnaInputSection title="Detail Tambahan" description="Tambahkan detail atau hiasan spesifik lainnya.">
-          <textarea
-              value={videoDetails}
-              onChange={(e) => setVideoDetails(e.target.value)}
-              placeholder="contoh: dengan partikel debu bintang yang berkilauan"
-              rows={2}
-              className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-          />
-      </DnaInputSection>
-
-      {/* Final Video Prompt Section */}
-       <div className="flex flex-col gap-2 pt-6 border-t border-gray-700">
-        <div className="flex justify-between items-center">
-            <h2 className="text-xl font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-300 to-cyan-300">Prompt Video Final</h2>
-        </div>
-        <p className="text-sm text-gray-400 mb-2">Ini adalah prompt lengkap yang akan digunakan untuk menghasilkan video Anda.</p>
-        <p className="text-gray-400 bg-gray-900/50 p-4 rounded-md text-sm leading-relaxed">
+      {/* --- Simple Video Generator --- */}
+      <DnaInputSection title="Prompt Video Final (Mode Sederhana)" description="Gunakan kontrol di bawah ini untuk membuat prompt video sederhana. Ini tidak menggunakan generator JSON di atas.">
+        <p className="text-gray-400 bg-gray-900/50 p-4 rounded-md text-sm leading-relaxed min-h-[100px]">
             {finalVideoPrompt}
         </p>
-      </div>
-
-       {/* Video Output Section */}
-      <DnaInputSection title="Hasil Video" description="Video Anda akan muncul di bawah ini.">
-        <div className="aspect-video w-full bg-gray-900/50 rounded-lg flex items-center justify-center p-4 border-2 border-dashed border-gray-600">
-            {isVideoLoading && (
-                <div className="text-center text-gray-400">
-                    <svg className="animate-spin h-8 w-8 mx-auto mb-3 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    <p>{videoLoadingMessage || 'Menghasilkan video...'}</p>
-                </div>
-            )}
-            {!isVideoLoading && videoError && <p className="text-red-400">{videoError}</p>}
-            {!isVideoLoading && !videoError && !generatedVideo && (
-                <div className="text-center text-gray-500">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                    <p>Video yang dihasilkan akan muncul di sini.</p>
-                </div>
-            )}
-            {generatedVideo && !isVideoLoading && !videoError && (
-                <video src={generatedVideo} controls className="w-full h-full rounded" />
-            )}
-        </div>
       </DnaInputSection>
 
-      {/* Generate Video Button */}
       <button
         onClick={handleGenerateVideo}
         disabled={isVideoLoading || !finalVideoPrompt.trim()}
-        className="w-full py-4 px-6 text-lg font-semibold text-white rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 hover:from-purple-700 hover:to-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-lg focus:outline-none focus:ring-4 focus:ring-purple-500/50 transform hover:scale-105"
+        className="w-full py-3 px-6 text-lg font-semibold text-white rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 hover:from-purple-700 hover:to-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-lg"
       >
-        {isVideoLoading ? 'Menghasilkan...' : 'Hasilkan Video'}
+        {isVideoLoading ? 'Menghasilkan Video...' : 'Hasilkan Video (Mode Sederhana)'}
       </button>
+
+      {/* Video Output Section */}
+      <div className="mt-6">
+        {isVideoLoading && (
+            <div className="flex flex-col items-center justify-center gap-4 text-gray-400 p-4 bg-gray-900/50 rounded-lg border-2 border-dashed border-gray-600 min-h-[200px]">
+                <svg className="animate-spin h-12 w-12 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <p className="text-lg font-semibold">Video sedang dibuat...</p>
+                <p className="text-sm text-center max-w-md">{videoLoadingMessage || 'Proses ini mungkin memakan waktu beberapa menit. Harap jangan tutup atau segarkan halaman ini.'}</p>
+            </div>
+        )}
+        {videoError && (
+             <div className="text-center text-red-400 p-4 bg-red-900/20 rounded-lg">
+                <h3 className="font-bold text-lg mb-2">Gagal Menghasilkan Video</h3>
+                <p className="text-sm">{videoError}</p>
+             </div>
+        )}
+        {generatedVideo && (
+            <div className="w-full aspect-video bg-black rounded-lg overflow-hidden">
+                <video src={generatedVideo} controls autoPlay loop className="w-full h-full object-contain" />
+            </div>
+        )}
+      </div>
     </>
     );
   };
 
-  if (!apiKey) {
-    return (
-      <div className="min-h-screen bg-gray-900 text-gray-200 font-sans flex items-center justify-center p-4">
-        <div className="w-full max-w-md mx-auto">
-          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-8 shadow-2xl">
-            <h1 className="text-2xl font-bold text-center text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400 mb-2">
-              Selamat Datang!
-            </h1>
-            <p className="text-center text-gray-400 mb-6">Untuk menggunakan aplikasi, masukkan Gemini API Key Anda.</p>
-            <form onSubmit={handleApiKeySubmit}>
-              <div className="flex flex-col gap-4">
-                <input
-                  type="password"
-                  value={tempApiKey}
-                  onChange={(e) => setTempApiKey(e.target.value)}
-                  placeholder="Masukkan API Key Anda di sini"
-                  className="w-full bg-gray-700 text-white rounded-md p-3 border border-gray-600 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
-                />
-                <button
-                  type="submit"
-                  className="w-full py-3 px-6 text-lg font-semibold text-white rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 hover:from-purple-700 hover:to-cyan-600 disabled:opacity-50 transition-all duration-300 shadow-lg focus:outline-none focus:ring-4 focus:ring-purple-500/50"
-                >
-                  Simpan & Mulai
-                </button>
-              </div>
-            </form>
-             <p className="text-center text-xs text-gray-500 mt-4">
-               API Key Anda disimpan di browser Anda dan tidak pernah dikirim ke server kami.
-               Dapatkan kunci Anda dari <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">Google AI Studio</a>.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-200 font-sans">
-      <main className="container mx-auto p-4 md:p-8">
-        <header className="mb-10">
-          <div className="text-center">
-            <h1 className="text-4xl md:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400">
-              Bang Muze Tools Generator
-            </h1>
-            <p className="mt-2 text-lg text-gray-400">
-              Imajinasikan ide kalian menjadi kenyataan dengan cepat dan akurat.
-            </p>
-          </div>
-
-          <div className="mt-6 flex justify-center gap-4">
-            <button 
-              onClick={() => setGeneratorMode('product')}
-              className={`flex items-center gap-2 px-6 py-2 text-md font-semibold rounded-lg transition-all duration-300 shadow-md focus:outline-none focus:ring-4 focus:ring-opacity-50 transform hover:scale-105 ${generatorMode === 'product' ? 'text-white bg-gradient-to-r from-purple-600 to-cyan-500 focus:ring-purple-500' : 'text-gray-300 bg-gray-700 hover:bg-gray-600 focus:ring-gray-500'}`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-              <span>Image Generator</span>
-            </button>
-            <button 
-              onClick={() => setGeneratorMode('video')}
-              className={`flex items-center gap-2 px-6 py-2 text-md font-semibold rounded-lg transition-all duration-300 shadow-md focus:outline-none focus:ring-4 focus:ring-opacity-50 transform hover:scale-105 ${generatorMode === 'video' ? 'text-white bg-gradient-to-r from-purple-600 to-cyan-500 focus:ring-purple-500' : 'text-gray-300 bg-gray-700 hover:bg-gray-600 focus:ring-gray-500'}`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-              <span>Video Generator</span>
-            </button>
-          </div>
+    <div className="bg-gray-800 min-h-screen">
+      <div className="container mx-auto p-4 md:p-8 text-white max-w-4xl">
+        <header className="text-center mb-8">
+          <h1 className="text-4xl md:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400">
+            Bang Muze Tools Generator
+          </h1>
+          <p className="text-gray-400 mt-2">
+            Ciptakan visual dan video menakjubkan dari imajinasi Anda.
+          </p>
         </header>
 
-        <div className="max-w-4xl mx-auto">
-          <div className="flex flex-col gap-6 p-6 bg-gray-800/50 rounded-2xl border border-gray-700">
-            {generatorMode === 'product' ? renderProductGenerator() : renderVideoGenerator()}
-          </div>
-        </div>
-      </main>
+        {!isApiKeySelected ? (
+            <div className="bg-gray-900/50 p-6 rounded-lg text-center flex flex-col items-center gap-4">
+                <h2 className="text-2xl font-semibold text-yellow-400">Diperlukan Kunci API</h2>
+                <p className="text-gray-300 max-w-md">
+                    Untuk menggunakan fungsionalitas pembuatan video, Anda harus memilih Kunci API.
+                    Ini memastikan Anda terhubung ke layanan AI Google.
+                </p>
+                <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-sm text-cyan-400 hover:underline">
+                    Pelajari tentang penagihan
+                </a>
+                <button
+                    onClick={handleSelectKey}
+                    className="mt-2 py-2 px-6 text-md font-semibold text-white rounded-lg bg-gradient-to-r from-purple-600 to-cyan-500 hover:from-purple-700 hover:to-cyan-600 transition-all duration-300 shadow-md"
+                >
+                    Pilih Kunci API
+                </button>
+            </div>
+        ) : (
+          <>
+            <div className="flex justify-center mb-8 bg-gray-900/50 p-2 rounded-full">
+                <button 
+                    onClick={() => handleModeChange('product')}
+                    className={`px-6 py-2 rounded-full text-sm font-semibold transition-all duration-300 ${generatorMode === 'product' ? 'bg-purple-600 text-white shadow-lg' : 'text-gray-400'}`}
+                >
+                    Generator Gambar
+                </button>
+                <button 
+                    onClick={() => handleModeChange('video')}
+                    className={`px-6 py-2 rounded-full text-sm font-semibold transition-all duration-300 ${generatorMode === 'video' ? 'bg-purple-600 text-white shadow-lg' : 'text-gray-400'}`}
+                >
+                    Generator Video
+                </button>
+            </div>
+            
+            <main className={`flex flex-col gap-8 transition-opacity duration-200 ${isFading ? 'opacity-0' : 'opacity-100'}`}>
+              {generatorMode === 'product' ? renderProductGenerator() : renderVideoGenerator()}
+            </main>
+          </>
+        )}
+      </div>
     </div>
   );
 };

@@ -1,25 +1,20 @@
-
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 
 const handleError = (error: unknown, context: string): never => {
     console.error(`Error ${context}:`, error);
-    // More specific error for API key issues
-    if (error instanceof Error && (error.message.includes('API key not valid') || error.message.includes('permission') || error.message.includes('API_KEY_INVALID') || error.message.includes('Requested entity was not found'))) {
-        throw new Error(`Kunci API yang Anda berikan tidak valid atau tidak ditemukan. Silakan atur kunci yang benar dan coba lagi.`);
-    }
+    // Let the original error message bubble up, as App.tsx will check for specific strings.
     const errorMessage = error instanceof Error ? error.message : `An unexpected error occurred during ${context}.`;
-    throw new Error(`Failed to ${context}: ${errorMessage}`);
+    throw new Error(errorMessage);
 };
 
 /**
  * Generates an image from a text prompt using the 'imagen-4.0-generate-001' model.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param prompt The text prompt describing the image to generate.
  * @param aspectRatio The desired aspect ratio for the image.
  * @returns A promise that resolves to a base64 data URL of the generated image.
  */
-export const generateImageFromText = async (apiKey: string, prompt: string, aspectRatio: string): Promise<string[]> => {
-  const ai = new GoogleGenAI({ apiKey });
+export const generateImageFromText = async (prompt: string, aspectRatio: string): Promise<string[]> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
     const response = await ai.models.generateImages({
         model: 'imagen-4.0-generate-001',
@@ -52,13 +47,12 @@ export const generateImageFromText = async (apiKey: string, prompt: string, aspe
 
 /**
  * Edits an existing image based on a text prompt using the 'gemini-2.5-flash-image' model.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param prompt The text prompt describing the edits.
  * @param base64ImageDataUrl The base64 data URL of the image to edit.
  * @returns A promise that resolves to a base64 data URL of the edited image.
  */
-export const editImageWithPrompt = async (apiKey: string, prompt: string, base64ImageDataUrl: string): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey });
+export const editImageWithPrompt = async (prompt: string, base64ImageDataUrl: string): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
     const match = base64ImageDataUrl.match(/^data:(.+);base64,(.+)$/);
     if (!match) {
@@ -129,7 +123,6 @@ export const editImageWithPrompt = async (apiKey: string, prompt: string, base64
 
 /**
  * Generates a video from a text prompt and optional reference image.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param prompt The text prompt for the video.
  * @param aspectRatio The aspect ratio ('16:9' or '9:16').
  * @param resolution The resolution ('720p' or '1080p').
@@ -138,14 +131,13 @@ export const editImageWithPrompt = async (apiKey: string, prompt: string, base64
  * @returns A promise that resolves to a blob URL of the generated video.
  */
 export const generateVideoFromPrompt = async (
-    apiKey: string,
     prompt: string,
     aspectRatio: '16:9' | '9:16',
     resolution: '720p' | '1080p',
     referenceImageUrl: string | null,
     onProgress: (message: string) => void,
 ): Promise<string> => {
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
         const requestPayload: any = {
             model: 'veo-3.1-fast-generate-preview',
@@ -183,7 +175,7 @@ export const generateVideoFromPrompt = async (
             throw new Error("Tidak ada tautan unduhan video yang ditemukan dalam respons API.");
         }
 
-        const videoResponse = await fetch(`${downloadLink}&key=${apiKey}`);
+        const videoResponse = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
         if (!videoResponse.ok) {
             throw new Error(`Gagal mengunduh video: ${videoResponse.statusText}`);
         }
@@ -199,12 +191,11 @@ export const generateVideoFromPrompt = async (
 
 /**
  * Gets feedback on a given prompt to improve it for image generation.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param prompt The user-generated prompt.
  * @returns A promise that resolves to a string containing AI-powered suggestions.
  */
-export const getPromptFeedback = async (apiKey: string, prompt: string): Promise<string> => {
-    const ai = new GoogleGenAI({ apiKey });
+export const getPromptFeedback = async (prompt: string): Promise<string> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
@@ -228,12 +219,11 @@ export const getPromptFeedback = async (apiKey: string, prompt: string): Promise
 
 /**
  * Generates creative prompt templates based on user's initial ideas.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param context An object containing the current subject, style, and environment.
  * @returns A promise that resolves to an array of prompt suggestion strings.
  */
-export const getSmartSuggestions = async (apiKey: string, context: { subject: string, style: string, environment: string }): Promise<string[]> => {
-    const ai = new GoogleGenAI({ apiKey });
+export const getSmartSuggestions = async (context: { subject: string, style: string, environment: string }): Promise<string[]> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
         const userPrompt = `Berdasarkan ide-ide berikut, hasilkan 3 prompt gambar yang lengkap, kreatif, dan detail:
 - Subjek: "${context.subject}"
@@ -261,12 +251,11 @@ export const getSmartSuggestions = async (apiKey: string, context: { subject: st
 
 /**
  * Generates a short dialogue script based on video context.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param context An object containing the video subject, action, and a movement hint.
  * @returns A promise that resolves to a string containing the generated dialogue.
  */
-export const generateDialogueScript = async (apiKey: string, context: { subject: string, action: string, movement: string }): Promise<string> => {
-    const ai = new GoogleGenAI({ apiKey });
+export const generateDialogueScript = async (context: { subject: string, action: string, movement: string }): Promise<string> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
         const userPrompt = `Buatlah dialog singkat (1-2 kalimat) untuk sebuah adegan video berdasarkan konteks berikut:
 - Subjek: "${context.subject}"
@@ -293,11 +282,10 @@ export const generateDialogueScript = async (apiKey: string, context: { subject:
 
 /**
  * Generates a structured JSON prompt for a video.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param context An object containing video context and specific movement descriptions.
  * @returns A promise that resolves to a string containing the structured JSON prompt.
  */
-export const generateJsonPrompt = async (apiKey: string, context: {
+export const generateJsonPrompt = async (context: {
     subject: string;
     action: string;
     videoConcept: string;
@@ -311,7 +299,7 @@ export const generateJsonPrompt = async (apiKey: string, context: {
     dialogueLanguage: string;
     dialogueTempo: string;
 }): Promise<string> => {
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
         let comedyInstruction = '';
         if (context.dialogueStyle === 'Comedy') {
@@ -439,18 +427,17 @@ Generate a valid JSON array containing exactly three JSON objects. Each object r
 
 /**
  * Analyzes an image and suggests movements for a video.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param base64ImageDataUrl The base64 data URL of the image to analyze.
  * @returns A promise that resolves to an object with movement suggestions.
  */
-export const analyzeImageForMovement = async (apiKey: string, base64ImageDataUrl: string): Promise<{
+export const analyzeImageForMovement = async (base64ImageDataUrl: string): Promise<{
     mainAction: string;
     cameraMovement: string;
     hookMovement: string;
     problemMovement: string;
     ctaMovement: string;
 }> => {
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
         const match = base64ImageDataUrl.match(/^data:(.+);base64,(.+)$/);
         if (!match) {
@@ -501,13 +488,12 @@ Penting:
 
 /**
  * Generates a single image from a text prompt using the 'imagen-4.0-generate-001' model.
- * @param apiKey The user-provided Google AI Studio API key.
  * @param prompt The text prompt describing the image to generate.
  * @param aspectRatio The desired aspect ratio for the image.
  * @returns A promise that resolves to a base64 data URL of the generated image.
  */
-export const generateSingleImage = async (apiKey: string, prompt: string, aspectRatio: string): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey });
+export const generateSingleImage = async (prompt: string, aspectRatio: string): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
     const response = await ai.models.generateImages({
         model: 'imagen-4.0-generate-001',
